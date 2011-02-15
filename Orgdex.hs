@@ -25,10 +25,10 @@ parseOrgDocument = many $ parseHeading
 --    - the heading name itself
 --    - a list of tags (between :, separated by :, eg :foo:bar:)
 parseHeading =
-    Heading <$> level <*> (optionMaybe keyword) <*> name <*> (option [] tags) <* eol
+    Heading <$> level <*> optionMaybe keyword <*> name <*> option [] tags <* eol
     where level = length <$> many1 (char '*') <* space
           keyword = try $ many1 upper <* space
-          name = noneOf "\n" `manyTill` (lookAhead (try ((tags *> eol) <|> eol)))
+          name = noneOf "\n" `manyTill` lookAhead (try $ (tags *> eol) <|> eol)
           tags = char ':' *> many1 alphaNum `sepEndBy1` char ':'
 
 -- Make sure we're at the end of a line, where the end of the stream will also count
