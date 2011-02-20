@@ -5,18 +5,21 @@ import Control.Monad
 import Data.Char (isSpace)
 import Text.ParserCombinators.Parsec
 
-data DocumentPart = Heading {
-      level :: Int,
-      keyword :: Maybe String,
-      heading :: String,
-      tags :: [String]
-    } deriving (Show)
+instance Applicative (GenParser s a) where
+    pure  = return
+    (<*>) = ap
+
+data DocumentPart = Heading Int (Maybe String) String [String]
+                  | Paragraph String
+                  deriving (Show)
 
 data OrgDocument = OrgDocument [DocumentPart]
   deriving (Show)
 
 -- Parse an org-mode document
-parseOrgDocument = many $ parseHeading
+parseOrgDocument = blanklines >> manyTill block eof
+
+block = choice [ heading, paragraph ]
 
 -- Parse an org-mode heading
 -- Headings are
@@ -24,12 +27,21 @@ parseOrgDocument = many $ parseHeading
 --    - a keyword (ie TODO)
 --    - the heading name itself
 --    - a list of tags (between :, separated by :, eg :foo:bar:)
-parseHeading =
-    Heading <$> level <*> optionMaybe keyword <*> name <*> option [] tags <* eol
+heading =
+  Heading <$> level <*> optionMaybe keyword <*> name <*> option [] tags <* blanklines
     where level = length <$> many1 (char '*') <* space
           keyword = try $ many1 upper <* space
           name = noneOf "\n" `manyTill` lookAhead (try $ (tags *> eol) <|> eol)
           tags = char ':' *> many1 alphaNum `sepEndBy1` char ':'
+
+paragraph =
+  do text <- anyChar `manyTill` (try $ newline >> blanklines)
+     return (Paragraph text)
+
+blanklines = many1 blankline
+  where blankline = try $ skipSpaces >> newline
+        skipSpaces = skipMany spaceChar
+        spaceChar = satisfy $ \c -> c == ' '
 
 -- Make sure we're at the end of a line, where the end of the stream will also count
 -- Discard the result.
