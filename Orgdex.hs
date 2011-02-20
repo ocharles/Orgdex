@@ -1,53 +1,75 @@
--- Orgdex - an indexer for org-mode files
+{-
+Copyright (C) 2011 by Oliver Charles <oliver.g.charles@googlemail.com>
 
-import Control.Applicative hiding (many, optional, (<|>))
-import Control.Monad
-import Data.Char (isSpace)
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+
+-}
+
+-- | Orgdex, an org-mode document indexer
+module Orgdex
+       (
+         parseOrgDocument
+       , openDatabase
+       , indexDocument
+       , findBlocks
+       ) where
+
+import Control.Monad (mapM, zipWithM)
+import Orgdex.Parsing
+import Search.Xapian hiding ( (<|>), Database, openDatabase )
+import qualified Search.Xapian as Xapian
 import Text.ParserCombinators.Parsec
 
-instance Applicative (GenParser s a) where
-    pure  = return
-    (<*>) = ap
+newtype Database = Database { getDatabase :: Xapian.Database }
 
-data DocumentPart = Heading Int (Maybe String) String [String]
-                  | Paragraph String
-                  deriving (Show)
+openDatabase path =
+  do (Right db) <- openWritableDatabase path createOrOpenDB
+     return (Database db)
 
-data OrgDocument = OrgDocument [DocumentPart]
-  deriving (Show)
+documentTerms :: OrgDocument -> [String]
+documentTerms (OrgDocument parts) = concat $ blockTerms `map` parts
 
--- Parse an org-mode document
-parseOrgDocument = blanklines >> manyTill block eof
+blockTerms :: DocumentPart -> [String]
+blockTerms (Heading _ keyword name tags) =
+  keywordTerms
+  where tagTerms = ("T"++) `map` tags
+        nameTerms = []
+        keywordTerms = case keyword of
+          (Just keyword) -> ["K" ++ keyword]
+          _ -> []
+blockTerms _ = []
 
-block = choice [ heading, paragraph ]
+indexBlock database (Heading _ keyword name tags) =
+  do doc <- newDocument
+     doc `setDocumentData` name
+     zipWithM (addPosting doc) tags [1..]
+     stemToDocument englishStem doc name
+     database `addDocument` doc
+     return ()
 
--- Parse an org-mode heading
--- Headings are
---    - 1 or more *s indicating the level of the heading
---    - a keyword (ie TODO)
---    - the heading name itself
---    - a list of tags (between :, separated by :, eg :foo:bar:)
-heading =
-  Heading <$> level <*> optionMaybe keyword <*> name <*> option [] tags <* blanklines
-    where level = length <$> many1 (char '*') <* space
-          keyword = try $ many1 upper <* space
-          name = noneOf "\n" `manyTill` lookAhead (try $ (tags *> eol) <|> eol)
-          tags = char ':' *> many1 alphaNum `sepEndBy1` char ':'
+indexDocument database document =
+  (indexBlock $ getDatabase database) `mapM` blocks
+  where blocks = case parseOrgDocument document of
+          (OrgDocument parts) -> parts
 
-paragraph =
-  do text <- anyChar `manyTill` (try $ newline >> blanklines)
-     return (Paragraph text)
-
-blanklines = many1 blankline
-  where blankline = try $ skipSpaces >> newline
-        skipSpaces = skipMany spaceChar
-        spaceChar = satisfy $ \c -> c == ' '
-
--- Make sure we're at the end of a line, where the end of the stream will also count
--- Discard the result.
-eol = (char '\n' >> return ()) <|> eof
-
-parseOrg input = parse parseOrgDocument "org-mode" input
-
-myTest = parseOrg "** Some : text here :tags: JUST KIDDING :tags:here:\n* Heading"
-myTest2 = parseOrg "* TODO Just a node\n* Test"
+findBlocks database queryStr =
+  do let query = parseQuery englishStem queryStr
+     let db = getDatabase database
+     documentIds <- enquire db query 0 100
+     documents <- (getDocument db) `mapM` documentIds
+     (fmap parseOrgDocument) `fmap` (getDocumentData `mapM` documents)
